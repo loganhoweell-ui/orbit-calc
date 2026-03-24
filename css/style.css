@@ -72,51 +72,30 @@ body {
 
 #logo:hover { background: var(--bg-card); }
 
-#logo-orbit-ring {
-  position: absolute;
-  inset: -2px;
-  border-radius: 99px;
-  border: 1px solid transparent;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity .3s;
-}
-
-#logo:hover #logo-orbit-ring {
-  opacity: 1;
-  animation: sweepRing 1.8s linear infinite;
-  border-color: rgba(255,255,255,.08);
-  background: conic-gradient(
-    from var(--_sweep, 0deg),
-    transparent 60%,
-    rgba(255,255,255,.18) 73%,
-    rgba(255,255,255,.08) 80%,
-    transparent 92%
-  );
-}
-
-@property --_sweep {
-  syntax: '<angle>';
-  inherits: false;
-  initial-value: 0deg;
-}
-
-@keyframes sweepRing {
-  to { --_sweep: 360deg; }
-}
-
 @keyframes logoPulse {
-  0%, 100% { filter: drop-shadow(0 0 4px rgba(255,255,255,.15)); }
-  50%       { filter: drop-shadow(0 0 8px rgba(255,255,255,.3)); }
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(255,255,255,.2)); }
+  50%       { filter: drop-shadow(0 0 7px rgba(255,255,255,.45)); }
 }
 
-#logo-icon {
+/* Atom SVG logo */
+#atom-logo {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  animation: logoPulse 3.5s ease-in-out infinite;
+  transition: transform .2s var(--spring);
+}
+
+#logo:hover #atom-logo {
+  transform: scale(1.08);
+}
+
+/* Mini atom in AI panel */
+#ai-atom-icon {
   width: 24px;
   height: 24px;
-  object-fit: contain;
-  position: relative;
-  z-index: 1;
-  animation: logoPulse 3s ease-in-out infinite;
+  flex-shrink: 0;
+  animation: logoPulse 2.5s ease-in-out infinite;
 }
 
 #logo-text {
@@ -773,10 +752,6 @@ body {
   color: var(--t1);
 }
 
-#ai-title-icon {
-  font-size: 13px;
-  animation: logoPulse 2.5s ease-in-out infinite;
-}
 
 #ai-header-actions {
   display: flex;

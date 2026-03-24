@@ -13,8 +13,46 @@
     <!-- Header -->
     <header id="header">
       <div id="logo" title="Click 3× to open Orbit AI">
-        <div id="logo-orbit-ring"></div>
-        <img src="orbit.ico" alt="" id="logo-icon">
+        <!-- Animated atom logo matching orbit-studio style -->
+        <svg id="atom-logo" viewBox="-26 -26 52 52" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <filter id="atom-glow">
+              <feGaussianBlur stdDeviation="1.2" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+
+          <!-- Ring 1 — 0° (horizontal) -->
+          <g>
+            <ellipse rx="19" ry="6.5" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+            <circle r="2.6" fill="rgba(255,255,255,0.92)" filter="url(#atom-glow)">
+              <animateMotion dur="3.2s" repeatCount="indefinite"
+                path="M19,0 A19,6.5 0 1,1 -19,0 A19,6.5 0 1,1 19,0"/>
+            </circle>
+          </g>
+
+          <!-- Ring 2 — 60° -->
+          <g transform="rotate(60)">
+            <ellipse rx="19" ry="6.5" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+            <circle r="2.6" fill="rgba(255,255,255,0.92)" filter="url(#atom-glow)">
+              <animateMotion dur="3.2s" repeatCount="indefinite" begin="-1.07s"
+                path="M19,0 A19,6.5 0 1,1 -19,0 A19,6.5 0 1,1 19,0"/>
+            </circle>
+          </g>
+
+          <!-- Ring 3 — 120° -->
+          <g transform="rotate(120)">
+            <ellipse rx="19" ry="6.5" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+            <circle r="2.6" fill="rgba(255,255,255,0.92)" filter="url(#atom-glow)">
+              <animateMotion dur="3.2s" repeatCount="indefinite" begin="-2.13s"
+                path="M19,0 A19,6.5 0 1,1 -19,0 A19,6.5 0 1,1 19,0"/>
+            </circle>
+          </g>
+
+          <!-- Nucleus -->
+          <circle r="4" fill="white" filter="url(#atom-glow)"/>
+        </svg>
+
         <span id="logo-text">Orbit</span>
         <span id="logo-sub">calc</span>
       </div>
@@ -74,7 +112,16 @@
     <div id="ai-panel" class="hidden">
       <div id="ai-panel-header">
         <div id="ai-panel-title">
-          <span id="ai-title-icon">✦</span>
+          <!-- Mini atom for AI panel header -->
+          <svg id="ai-atom-icon" viewBox="-14 -14 28 28" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <g><ellipse rx="10" ry="3.8" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.9"/>
+              <circle r="1.6" fill="white"><animateMotion dur="2.4s" repeatCount="indefinite" path="M10,0 A10,3.8 0 1,1 -10,0 A10,3.8 0 1,1 10,0"/></circle></g>
+            <g transform="rotate(60)"><ellipse rx="10" ry="3.8" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.9"/>
+              <circle r="1.6" fill="white"><animateMotion dur="2.4s" repeatCount="indefinite" begin="-0.8s" path="M10,0 A10,3.8 0 1,1 -10,0 A10,3.8 0 1,1 10,0"/></circle></g>
+            <g transform="rotate(120)"><ellipse rx="10" ry="3.8" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.9"/>
+              <circle r="1.6" fill="white"><animateMotion dur="2.4s" repeatCount="indefinite" begin="-1.6s" path="M10,0 A10,3.8 0 1,1 -10,0 A10,3.8 0 1,1 10,0"/></circle></g>
+            <circle r="2.5" fill="white"/>
+          </svg>
           <span>Orbit AI</span>
         </div>
         <div id="ai-header-actions">
