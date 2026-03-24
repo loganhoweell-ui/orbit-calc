@@ -23,17 +23,52 @@ const MATH_SYMBOLS = new Set([
   'max','min','pow','sum','prod',
   'factorial','gamma','beta',
   'derivative','integral','simplify','parse',
-  'Number','Complex','BigNumber','Fraction','Unit','Matrix','DenseMatrix'
+  'Number','Complex','BigNumber','Fraction','Unit','Matrix','DenseMatrix',
+  'if','and','or','not','xor'
 ]);
+
+// ================================================================
+//  HistoryManager  —  undo/redo with max 100 states
+// ================================================================
+class HistoryManager {
+  constructor() {
+    this.stack = [];
+    this.pointer = -1;
+    this.MAX = 100;
+  }
+
+  push(stateJson) {
+    // Drop any forward states
+    this.stack = this.stack.slice(0, this.pointer + 1);
+    this.stack.push(stateJson);
+    if (this.stack.length > this.MAX) this.stack.shift();
+    this.pointer = this.stack.length - 1;
+  }
+
+  canUndo() { return this.pointer > 0; }
+  canRedo() { return this.pointer < this.stack.length - 1; }
+
+  undo() {
+    if (!this.canUndo()) return null;
+    this.pointer--;
+    return this.stack[this.pointer];
+  }
+
+  redo() {
+    if (!this.canRedo()) return null;
+    this.pointer++;
+    return this.stack[this.pointer];
+  }
+}
 
 // ================================================================
 //  Viewport  —  world ↔ canvas coordinate system
 // ================================================================
 class Viewport {
   constructor() {
-    this.cx = 0;   // world x at canvas center
-    this.cy = 0;   // world y at canvas center
-    this.ppu = 60; // pixels per unit
+    this.cx = 0;
+    this.cy = 0;
+    this.ppu = 60;
     this.w = 800;
     this.h = 600;
   }
@@ -83,9 +118,70 @@ class Viewport {
 // ================================================================
 //  Expression preprocessing
 // ================================================================
+function preprocessPiecewise(s) {
+  // Detect { cond: val, cond: val, default } syntax
+  // e.g. {x > 0: x, x < 0: -x, 0}
+  const braceMatch = s.match(/^\{(.+)\}$/);
+  if (!braceMatch) return null;
+
+  const inner = braceMatch[1];
+  // Split by commas, but be careful about nested parens
+  const parts = splitByComma(inner);
+  if (parts.length < 1) return null;
+
+  // Each part is either "cond: val" or a bare "default"
+  const parsed = [];
+  for (const part of parts) {
+    const colonIdx = part.indexOf(':');
+    if (colonIdx !== -1) {
+      const cond = part.slice(0, colonIdx).trim();
+      const val  = part.slice(colonIdx + 1).trim();
+      parsed.push({ cond, val });
+    } else {
+      parsed.push({ cond: null, val: part.trim() });
+    }
+  }
+
+  // Build nested if(cond, val, ...) from back to front
+  let result = null;
+  for (let i = parsed.length - 1; i >= 0; i--) {
+    const { cond, val } = parsed[i];
+    if (cond === null) {
+      result = val;
+    } else {
+      result = result !== null
+        ? `if(${cond}, ${val}, ${result})`
+        : `if(${cond}, ${val}, NaN)`;
+    }
+  }
+  return result;
+}
+
+function splitByComma(s) {
+  const parts = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of s) {
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    if (ch === ',' && depth === 0) {
+      parts.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) parts.push(cur);
+  return parts;
+}
+
 function preprocess(expr) {
   let s = expr.trim();
-  // Replace ^ with ^ (mathjs handles it)
+
+  // Piecewise: if entire rhs is a {block}, convert it
+  const pwResult = preprocessPiecewise(s);
+  if (pwResult !== null) return pwResult;
+
   // Implicit multiplication: 2x → 2*x
   s = s.replace(/(\d)([\(a-zA-Z])/g, '$1*$2');
   // )(  →  )*(
@@ -113,21 +209,39 @@ class Evaluator {
     try {
       const v = math.evaluate(preprocess(expr), this._scope(vars));
       if (typeof v === 'number') return v;
-      if (v && typeof v.re === 'number') return v.re; // complex
+      if (typeof v === 'boolean') return v ? 1 : 0;
+      if (v && typeof v.re === 'number') return v.re;
       return NaN;
     } catch {
       return NaN;
     }
   }
 
-  // Evaluate f(x) for each x in array
-  evalBatch(expr, xs) {
+  evalBool(expr, vars = {}) {
+    try {
+      const v = math.evaluate(preprocess(expr), this._scope(vars));
+      if (typeof v === 'boolean') return v;
+      if (typeof v === 'number') return v !== 0;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  evalBatch(expr, xs, domain = null) {
     try {
       const compiled = math.compile(preprocess(expr));
+      const domainCompiled = domain ? math.compile(preprocess(domain)) : null;
       const scope = this._scope();
       return xs.map(x => {
         scope.x = x;
         try {
+          // Check domain restriction first
+          if (domainCompiled) {
+            const d = domainCompiled.evaluate({ ...scope });
+            if (typeof d === 'boolean' && !d) return NaN;
+            if (typeof d === 'number' && d === 0) return NaN;
+          }
           const v = compiled.evaluate(scope);
           if (typeof v === 'number') return v;
           if (v && typeof v.re === 'number') return v.re;
@@ -199,6 +313,11 @@ class Parser {
     const s = raw.trim();
     if (!s) return null;
 
+    // ----- Note/comment: starts with " // or # -----
+    if (s.startsWith('"') || s.startsWith('//') || s.startsWith('#')) {
+      return { kind: 'note', text: s.replace(/^["\/\/#]+\s*/, '') };
+    }
+
     // ----- Parametric: (f(t), g(t))  -----
     const paramMatch = s.match(/^\(\s*([^,]+)\s*,\s*([^)]+)\s*\)$/);
     if (paramMatch) {
@@ -209,7 +328,6 @@ class Parser {
       const hasT = allFree.includes('t') || allFree.length === 0;
       const allSliders = allFree.every(v => v === 't' || v in this.ev.sliders);
       if (hasT || allSliders) {
-        // Try as point first (no t, numeric)
         const px = this.ev.eval(xE, { t: 0 });
         const py = this.ev.eval(yE, { t: 0 });
         if (!isNaN(px) && !isNaN(py) && !allFree.includes('t')) {
@@ -230,15 +348,26 @@ class Parser {
       if (!isNaN(v)) return { kind: 'vertical', value: v };
     }
 
+    // ----- y = expr {domain condition} -----
+    const yDomainM = s.match(/^y\s*=\s*(.+?)\s*\{([^:]+)\}$/);
+    if (yDomainM) {
+      return { kind: 'function', expr: yDomainM[1].trim(), domain: yDomainM[2].trim() };
+    }
+
     // ----- y = f(x) or y [<>] f(x) -----
     const yM = s.match(/^y\s*([=<>!]{1,2})\s*(.+)$/);
     if (yM) {
-      const op = yM[1], expr = yM[2].trim();
-      if (op === '=') return { kind: 'function', expr };
-      if (['<', '>', '<=', '>='].includes(op)) return { kind: 'inequality', op, expr };
+      const op = yM[1], exprPart = yM[2].trim();
+      if (op === '=') {
+        // Check for piecewise on RHS
+        const pw = preprocessPiecewise(exprPart);
+        if (pw) return { kind: 'function', expr: exprPart };
+        return { kind: 'function', expr: exprPart };
+      }
+      if (['<', '>', '<=', '>='].includes(op)) return { kind: 'inequality', op, expr: exprPart };
     }
 
-    // ----- Horizontal line: implicit y = c (just a number) -----
+    // ----- Horizontal line: just a number -----
     const horzM = s.match(/^(-?[\d.]+(?:e[+-]?\d+)?)$/i);
     if (horzM) {
       const v = parseFloat(horzM[1]);
@@ -291,7 +420,9 @@ class Renderer {
     this.ctx = canvas.getContext('2d');
     this.vp = new Viewport();
     this.dpr = window.devicePixelRatio || 1;
-    this._calcOverlays = []; // { type, ... }
+    this._calcOverlays = [];
+    // Click-to-trace marker
+    this.tracePoint = null; // { wx, wy }
   }
 
   resize() {
@@ -312,7 +443,6 @@ class Renderer {
     const { ctx, vp } = this;
     const { w, h, xMin, xMax, yMin, yMax } = vp;
 
-    // Background
     ctx.fillStyle = '#080808';
     ctx.fillRect(0, 0, w, h);
 
@@ -321,19 +451,16 @@ class Renderer {
     const xStep = niceStep(xRange, 10);
     const yStep = niceStep(yRange, 10);
 
-    // Minor gridlines
     ctx.strokeStyle = 'rgba(50, 50, 50, 0.7)';
     ctx.lineWidth = 0.5;
     this._drawGridLines(xStep, yStep);
 
-    // Sub-divisions (5x finer) if zoomed in
     if (vp.ppu > 40) {
       ctx.strokeStyle = 'rgba(35, 35, 35, 0.6)';
       ctx.lineWidth = 0.3;
       this._drawGridLines(xStep / 5, yStep / 5);
     }
 
-    // Axes
     const [ax] = vp.toCanvas(0, 0);
     const [, ay] = vp.toCanvas(0, 0);
 
@@ -347,18 +474,14 @@ class Renderer {
       ctx.beginPath(); ctx.moveTo(ax, 0); ctx.lineTo(ax, h); ctx.stroke();
     }
 
-    // Axis arrows
     ctx.fillStyle = 'rgba(100, 100, 100, 0.9)';
     if (ay >= 0 && ay <= h) {
-      // Right arrow
       ctx.beginPath(); ctx.moveTo(w - 8, ay - 4); ctx.lineTo(w, ay); ctx.lineTo(w - 8, ay + 4); ctx.fill();
     }
     if (ax >= 0 && ax <= w) {
-      // Up arrow
       ctx.beginPath(); ctx.moveTo(ax - 4, 8); ctx.lineTo(ax, 0); ctx.lineTo(ax + 4, 8); ctx.fill();
     }
 
-    // Tick labels
     this._drawTickLabels(xStep, yStep, ax, ay);
   }
 
@@ -388,7 +511,6 @@ class Renderer {
     ctx.font = `${Math.max(9, Math.min(12, 11))}px ui-monospace, 'Menlo', 'Consolas', monospace`;
     ctx.fillStyle = 'rgba(90, 90, 90, 0.85)';
 
-    // X labels
     const labelY = Math.min(Math.max(axisY + 5, 5), h - 18);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -399,7 +521,6 @@ class Renderer {
       if (cx > 20 && cx < w - 20) ctx.fillText(fmt(x), cx, labelY);
     }
 
-    // Y labels
     const labelX = Math.min(Math.max(axisX - 5, 30), w - 30);
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
@@ -410,7 +531,6 @@ class Renderer {
       if (cy > 15 && cy < h - 15) ctx.fillText(fmt(y), labelX, cy);
     }
 
-    // Origin
     if (axisX > 20 && axisX < w - 20 && axisY > 15 && axisY < h - 15) {
       ctx.textAlign = 'right'; ctx.textBaseline = 'top';
       ctx.fillStyle = 'rgba(70, 70, 70, 0.7)';
@@ -418,14 +538,22 @@ class Renderer {
     }
   }
 
+  // -- Line dash helper ------------------------------------------
+
+  _applyLineDash(ctx, lineStyle) {
+    if (lineStyle === 'dashed') ctx.setLineDash([10, 5]);
+    else if (lineStyle === 'dotted') ctx.setLineDash([2, 5]);
+    else ctx.setLineDash([]);
+  }
+
   // -- Function plotting -----------------------------------------
 
-  plotFunction(expr, color, thickness, evaluator) {
+  plotFunction(expr, color, thickness, evaluator, lineStyle, domain) {
     const { ctx, vp } = this;
     const N = Math.max(600, vp.w * 2);
     const dx = (vp.xMax - vp.xMin) / N;
     const xs = Array.from({ length: N + 1 }, (_, i) => vp.xMin + i * dx);
-    const ys = evaluator.evalBatch(expr, xs);
+    const ys = evaluator.evalBatch(expr, xs, domain);
 
     const maxJump = (vp.yMax - vp.yMin) * 8;
 
@@ -435,6 +563,7 @@ class Renderer {
     ctx.lineJoin = 'round';
     ctx.shadowBlur = 4;
     ctx.shadowColor = color;
+    this._applyLineDash(ctx, lineStyle);
     ctx.beginPath();
 
     let pen = false;
@@ -459,7 +588,6 @@ class Renderer {
     const W = vp.w, H = vp.h;
     const step = Math.max(2, Math.floor(W / 180));
 
-    // Build offscreen pixel map
     const off = document.createElement('canvas');
     off.width = W; off.height = H;
     const oc = off.getContext('2d');
@@ -484,19 +612,17 @@ class Renderer {
     ctx.drawImage(off, 0, 0);
     ctx.restore();
 
-    // Boundary line
-    this.plotFunction(expr, color, 2, evaluator);
+    this.plotFunction(expr, color, 2, evaluator, 'solid', null);
   }
 
   // -- Implicit function (marching squares) ----------------------
 
-  plotImplicit(leftExpr, rightExpr, color, thickness, evaluator) {
+  plotImplicit(leftExpr, rightExpr, color, thickness, evaluator, lineStyle) {
     const { ctx, vp } = this;
     const RES = 120;
     const dx = (vp.xMax - vp.xMin) / RES;
     const dy = (vp.yMax - vp.yMin) / RES;
 
-    // Sample grid
     const grid = [];
     for (let j = 0; j <= RES; j++) {
       grid[j] = [];
@@ -514,6 +640,7 @@ class Renderer {
     ctx.lineWidth = thickness;
     ctx.shadowBlur = 4;
     ctx.shadowColor = color;
+    this._applyLineDash(ctx, lineStyle);
     ctx.beginPath();
 
     for (let j = 0; j < RES; j++) {
@@ -564,7 +691,7 @@ class Renderer {
 
   // -- Polar curve -----------------------------------------------
 
-  plotPolar(expr, color, thickness, evaluator) {
+  plotPolar(expr, color, thickness, evaluator, lineStyle) {
     const { ctx, vp } = this;
     const N = 2000;
     const thetaMax = 4 * Math.PI;
@@ -574,6 +701,7 @@ class Renderer {
     ctx.lineWidth = thickness;
     ctx.shadowBlur = 4;
     ctx.shadowColor = color;
+    this._applyLineDash(ctx, lineStyle);
     ctx.beginPath();
 
     let pen = false;
@@ -594,7 +722,7 @@ class Renderer {
 
   // -- Parametric curve ------------------------------------------
 
-  plotParametric(xExpr, yExpr, color, thickness, evaluator) {
+  plotParametric(xExpr, yExpr, color, thickness, evaluator, lineStyle) {
     const { ctx, vp } = this;
     const N = 1000;
     const tMin = -2 * Math.PI, tMax = 2 * Math.PI;
@@ -604,6 +732,7 @@ class Renderer {
     ctx.lineWidth = thickness;
     ctx.shadowBlur = 4;
     ctx.shadowColor = color;
+    this._applyLineDash(ctx, lineStyle);
     ctx.beginPath();
 
     let pen = false;
@@ -623,6 +752,24 @@ class Renderer {
       prevX = wx; prevY = wy;
     }
 
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // -- Vertical line ---------------------------------------------
+
+  plotVertical(x, color, thickness, lineStyle) {
+    const { ctx, vp } = this;
+    const [cx] = vp.toCanvas(x, 0);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = thickness;
+    ctx.shadowBlur = 4;
+    ctx.shadowColor = color;
+    this._applyLineDash(ctx, lineStyle);
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, vp.h);
     ctx.stroke();
     ctx.restore();
   }
@@ -655,20 +802,51 @@ class Renderer {
     ctx.restore();
   }
 
-  // -- Vertical line ---------------------------------------------
+  // -- Trace marker (click-to-trace) ----------------------------
 
-  plotVertical(x, color, thickness) {
+  drawTraceMarker() {
+    if (!this.tracePoint) return;
     const { ctx, vp } = this;
-    const [cx] = vp.toCanvas(x, 0);
+    const { wx, wy } = this.tracePoint;
+    const [cx, cy] = vp.toCanvas(wx, wy);
+    const { w, h } = vp;
+
     ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = thickness;
-    ctx.shadowBlur = 4;
-    ctx.shadowColor = color;
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    // Crosshair vertical
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+    // Crosshair horizontal
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Dot
+    ctx.fillStyle = '#fff';
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = '#fff';
     ctx.beginPath();
-    ctx.moveTo(cx, 0);
-    ctx.lineTo(cx, vp.h);
+    ctx.arc(cx, cy, 5, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Coordinate badge
+    const label = `(${wx.toFixed(3)}, ${wy.toFixed(3)})`;
+    const px = Math.min(cx + 10, w - 130);
+    const py = Math.max(cy - 24, 4);
+    ctx.fillStyle = 'rgba(20,20,20,0.88)';
+    ctx.strokeStyle = 'rgba(80,80,80,0.7)';
+    ctx.lineWidth = 1;
+    const tw = ctx.measureText(label).width;
+    ctx.beginPath();
+    ctx.roundRect(px - 4, py - 2, tw + 14, 20, 4);
+    ctx.fill();
     ctx.stroke();
+    ctx.fillStyle = '#e0e0e0';
+    ctx.font = '11px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(label, px + 2, py + 2);
     ctx.restore();
   }
 
@@ -683,7 +861,6 @@ class Renderer {
     const dy = (evaluator.eval(expr, { x: x0 + h }) - evaluator.eval(expr, { x: x0 - h })) / (2 * h);
     if (!isFinite(dy)) return null;
 
-    // Tangent line across viewport
     const x1 = vp.xMin, y1 = y0 + dy * (x1 - x0);
     const x2 = vp.xMax, y2 = y0 + dy * (x2 - x0);
     const [cx1, cy1] = vp.toCanvas(x1, y1);
@@ -734,7 +911,6 @@ class Renderer {
     ctx.fill();
     ctx.restore();
 
-    // Boundary lines
     const ya = evaluator.eval(expr, { x: a });
     const yb = evaluator.eval(expr, { x: b });
     ctx.save();
@@ -770,10 +946,26 @@ class ExprItem {
     this.settingsOpen = false;
     this.isTable = false;
     this.tableRows = [{ x: '', y: '' }, { x: '', y: '' }, { x: '', y: '' }];
-    // slider state
     this.sliderVal = 1;
     this.sliderMin = -10;
     this.sliderMax = 10;
+    this.lineStyle = 'solid'; // 'solid' | 'dashed' | 'dotted'
+  }
+
+  toJSON() {
+    return {
+      id: this.id,
+      color: this.color,
+      raw: this.raw,
+      thickness: this.thickness,
+      visible: this.visible,
+      isTable: this.isTable,
+      tableRows: JSON.parse(JSON.stringify(this.tableRows)),
+      sliderVal: this.sliderVal,
+      sliderMin: this.sliderMin,
+      sliderMax: this.sliderMax,
+      lineStyle: this.lineStyle
+    };
   }
 }
 
@@ -785,24 +977,198 @@ class OrbitApp {
     this.canvas = document.getElementById('graph');
     this.renderer = new Renderer(this.canvas);
     this.items = [];
-    this.sliders = {};  // { varName: value }
+    this.sliders = {};
     this.dirty = true;
     this.dragging = false;
+    this._dragMoved = false;
     this.lastMouse = { x: 0, y: 0 };
     this.calcMode = false;
     this._calcTangentExpr = null;
     this._calcIntExpr = null;
-    this._calcOverlay = null; // { type, ... }
+    this._calcOverlay = null;
+
+    // Drag-to-reorder state
+    this._dragSrcId = null;
+
+    // History
+    this.history = new HistoryManager();
+
+    // Save debounce timer
+    this._saveTimer = null;
 
     this._init();
   }
+
+  // ================================================================
+  //  State persistence
+  // ================================================================
+
+  _getState() {
+    const vp = this.renderer.vp;
+    return {
+      items: this.items.map(i => i.toJSON()),
+      sliders: { ...this.sliders },
+      viewport: { cx: vp.cx, cy: vp.cy, ppu: vp.ppu }
+    };
+  }
+
+  _getStateJson() {
+    return JSON.stringify(this._getState());
+  }
+
+  _applyState(state, opts = {}) {
+    const { skipHistory = false } = opts;
+
+    _nextId = 1;
+    _colorIdx = 0;
+    this.items = [];
+    this.sliders = state.sliders || {};
+
+    for (const d of (state.items || [])) {
+      const item = new ExprItem();
+      // Override auto-assigned id/color so they match saved state
+      item.id = d.id;
+      item.color = d.color;
+      item.raw = d.raw || '';
+      item.thickness = d.thickness !== undefined ? d.thickness : 2.5;
+      item.visible = d.visible !== false;
+      item.isTable = !!d.isTable;
+      item.tableRows = d.tableRows || [{ x: '', y: '' }, { x: '', y: '' }, { x: '', y: '' }];
+      item.sliderVal = d.sliderVal !== undefined ? d.sliderVal : 1;
+      item.sliderMin = d.sliderMin !== undefined ? d.sliderMin : -10;
+      item.sliderMax = d.sliderMax !== undefined ? d.sliderMax : 10;
+      item.lineStyle = d.lineStyle || 'solid';
+
+      // Make sure _nextId stays above all loaded ids
+      if (d.id >= _nextId) _nextId = d.id + 1;
+
+      // Parse
+      if (!item.isTable && item.raw) {
+        const parser = new Parser(this.sliders);
+        item.parsed = parser.parse(item.raw);
+        if (item.parsed && item.parsed.kind === 'slider') {
+          this.sliders[item.parsed.var] = item.sliderVal;
+        }
+      }
+
+      this.items.push(item);
+    }
+
+    // Restore viewport
+    if (state.viewport) {
+      const vp = this.renderer.vp;
+      vp.cx = state.viewport.cx;
+      vp.cy = state.viewport.cy;
+      vp.ppu = state.viewport.ppu;
+    }
+
+    this._rebuildSidebar();
+    this.dirty = true;
+  }
+
+  _scheduleSave() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem('orbit-calc-state', this._getStateJson());
+      } catch {}
+    }, 500);
+  }
+
+  _pushHistory() {
+    this.history.push(this._getStateJson());
+    this._scheduleSave();
+  }
+
+  _undo() {
+    const json = this.history.undo();
+    if (json) {
+      this._applyState(JSON.parse(json), { skipHistory: true });
+      this._scheduleSave();
+    }
+    this._updateHistoryBtns();
+  }
+
+  _redo() {
+    const json = this.history.redo();
+    if (json) {
+      this._applyState(JSON.parse(json), { skipHistory: true });
+      this._scheduleSave();
+    }
+    this._updateHistoryBtns();
+  }
+
+  _updateHistoryBtns() {
+    const undoBtn = document.getElementById('btn-undo');
+    const redoBtn = document.getElementById('btn-redo');
+    if (undoBtn) undoBtn.disabled = !this.history.canUndo();
+    if (redoBtn) redoBtn.disabled = !this.history.canRedo();
+  }
+
+  // ================================================================
+  //  Share via URL
+  // ================================================================
+
+  _shareUrl() {
+    const state = this._getStateJson();
+    const encoded = btoa(unescape(encodeURIComponent(state)));
+    const url = window.location.href.split('#')[0] + '#' + encoded;
+    try {
+      navigator.clipboard.writeText(url).then(() => {
+        showToast('Link copied!');
+      }).catch(() => {
+        window.location.hash = encoded;
+        showToast('Link ready — copy from address bar');
+      });
+    } catch {
+      window.location.hash = encoded;
+      showToast('Link ready — copy from address bar');
+    }
+  }
+
+  _loadFromHash() {
+    const hash = window.location.hash.slice(1);
+    if (!hash) return false;
+    try {
+      const json = decodeURIComponent(escape(atob(hash)));
+      const state = JSON.parse(json);
+      this._applyState(state);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  _loadFromStorage() {
+    try {
+      const json = localStorage.getItem('orbit-calc-state');
+      if (!json) return false;
+      const state = JSON.parse(json);
+      this._applyState(state);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // ================================================================
+  //  Init
+  // ================================================================
 
   _init() {
     this.renderer.resize();
     this.renderer.vp.reset();
 
-    // Add two starter expressions
-    this._addItem();
+    // Load state: hash > localStorage > fresh
+    let loaded = this._loadFromHash();
+    if (!loaded) loaded = this._loadFromStorage();
+    if (!loaded) {
+      this._addItem(false, true); // silent (no history push)
+    }
+
+    // Push initial history state
+    this.history.push(this._getStateJson());
+    this._updateHistoryBtns();
 
     this._bindEvents();
     this._renderLoop();
@@ -813,16 +1179,22 @@ class OrbitApp {
     });
   }
 
-  // ---- Item management ----------------------------------------
+  // ================================================================
+  //  Item management
+  // ================================================================
 
-  _addItem(isTable = false) {
+  _addItem(isTable = false, silent = false) {
     const item = new ExprItem();
     item.isTable = isTable;
     this.items.push(item);
     this._rebuildSidebar();
     this.dirty = true;
 
-    // Focus last input
+    if (!silent) {
+      this._pushHistory();
+      this._updateHistoryBtns();
+    }
+
     setTimeout(() => {
       const inputs = document.querySelectorAll('.expr-input');
       if (inputs.length) inputs[inputs.length - 1].focus();
@@ -836,9 +1208,11 @@ class OrbitApp {
     if (item && item.parsed && item.parsed.kind === 'slider') {
       delete this.sliders[item.parsed.var];
     }
+    this._pushHistory();
     this.items = this.items.filter(i => i.id !== id);
     this._rebuildSidebar();
     this.dirty = true;
+    this._updateHistoryBtns();
   }
 
   _updateItem(id, raw) {
@@ -850,7 +1224,6 @@ class OrbitApp {
     item.parsed = parser.parse(raw);
 
     if (item.parsed && item.parsed.kind === 'slider') {
-      // Register slider value (keep existing if already set)
       if (!(item.parsed.var in this.sliders)) {
         this.sliders[item.parsed.var] = item.parsed.value;
         item.sliderVal = item.parsed.value;
@@ -861,9 +1234,23 @@ class OrbitApp {
 
     this._refreshItemUI(id);
     this.dirty = true;
+    this._scheduleSave();
   }
 
-  // ---- Sidebar rendering -------------------------------------
+  _clearAll() {
+    if (!confirm('Clear all expressions?')) return;
+    this._pushHistory();
+    this.items = [];
+    this.sliders = {};
+    this._addItem(false, true);
+    this._rebuildSidebar();
+    this.dirty = true;
+    this._updateHistoryBtns();
+  }
+
+  // ================================================================
+  //  Sidebar rendering
+  // ================================================================
 
   _rebuildSidebar() {
     const list = document.getElementById('expression-list');
@@ -871,6 +1258,7 @@ class OrbitApp {
     for (const item of this.items) {
       list.appendChild(item.isTable ? this._buildTableEl(item) : this._buildExprEl(item));
     }
+    this._updateHistoryBtns();
   }
 
   _refreshItemUI(id) {
@@ -880,7 +1268,6 @@ class OrbitApp {
     const el = document.querySelector(`.expr-item[data-id="${id}"]`);
     if (!el) return;
 
-    // Error state
     const err = el.querySelector('.expr-error-msg');
     if (item.parsed && item.parsed.kind === 'error') {
       el.classList.add('has-error');
@@ -889,7 +1276,6 @@ class OrbitApp {
       el.classList.remove('has-error');
     }
 
-    // Slider row visibility
     const sliderRow = el.querySelector('.slider-row');
     if (sliderRow) {
       if (item.parsed && item.parsed.kind === 'slider') {
@@ -907,18 +1293,47 @@ class OrbitApp {
         sliderRow.classList.remove('visible');
       }
     }
+
+    // Note: refresh note styling if needed
+    if (item.parsed && item.parsed.kind === 'note') {
+      const ta = el.querySelector('.expr-input');
+      if (ta) ta.classList.add('is-note');
+    } else {
+      const ta = el.querySelector('.expr-input');
+      if (ta) ta.classList.remove('is-note');
+    }
   }
+
+  // -- Color swatches HTML helper --------------------------------
+
+  _buildColorSwatchesHtml(item) {
+    const swatches = COLORS.map(c =>
+      `<div class="color-swatch ${c === item.color ? 'selected' : ''}" style="background:${c}" data-c="${c}"></div>`
+    ).join('');
+    return `
+      <div class="color-swatches">
+        ${swatches}
+        <input type="color" class="color-custom" value="${item.color}" title="Custom color">
+      </div>
+    `;
+  }
+
+  // -- Build expression element ---------------------------------
 
   _buildExprEl(item) {
     const div = document.createElement('div');
     div.className = 'expr-item';
     div.dataset.id = item.id;
 
+    // Drag-to-reorder
+    div.setAttribute('draggable', 'true');
+
     div.innerHTML = `
       <div class="expr-main-row">
+        <div class="drag-handle" title="Drag to reorder">⋮⋮</div>
         <div class="expr-color-bar" style="background:${item.color}" title="Click to change settings"></div>
         <div class="expr-input-area">
-          <textarea class="expr-input" placeholder="y = sin(x)  or  x²+y²=9  …" rows="1" spellcheck="false">${item.raw}</textarea>
+          <textarea class="expr-input${item.parsed && item.parsed.kind === 'note' ? ' is-note' : ''}" placeholder="y = sin(x)  or  x²+y²=9  …" rows="1" spellcheck="false">${item.raw}</textarea>
           <div class="expr-error-msg"></div>
         </div>
         <div class="expr-side-btns">
@@ -943,8 +1358,14 @@ class OrbitApp {
       <div class="expr-settings ${item.settingsOpen ? 'open' : ''}">
         <div class="settings-row">
           <span class="settings-label">Color</span>
-          <div class="color-swatches">
-            ${COLORS.map(c => `<div class="color-swatch ${c === item.color ? 'selected' : ''}" style="background:${c}" data-c="${c}"></div>`).join('')}
+          ${this._buildColorSwatchesHtml(item)}
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Style</span>
+          <div class="line-style-btns">
+            <button class="line-style-btn ${item.lineStyle === 'solid' ? 'active' : ''}" data-style="solid" title="Solid">—</button>
+            <button class="line-style-btn ${item.lineStyle === 'dashed' ? 'active' : ''}" data-style="dashed" title="Dashed">- -</button>
+            <button class="line-style-btn ${item.lineStyle === 'dotted' ? 'active' : ''}" data-style="dotted" title="Dotted">···</button>
           </div>
         </div>
         <div class="settings-row">
@@ -959,7 +1380,7 @@ class OrbitApp {
       </div>
     `;
 
-    // --- auto-resize textarea ---
+    // Auto-resize textarea
     const ta = div.querySelector('.expr-input');
     const autoH = () => {
       ta.style.height = 'auto';
@@ -971,14 +1392,21 @@ class OrbitApp {
       autoH();
       this._updateItem(item.id, ta.value);
     });
+
     ta.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
+        this._pushHistory();
         this._addItem();
       }
     });
 
-    // --- slider range ---
+    ta.addEventListener('blur', () => {
+      this._pushHistory();
+      this._updateHistoryBtns();
+    });
+
+    // Slider range
     const range = div.querySelector('.slider-range-input');
     const vDisp = div.querySelector('.slider-val-display');
     range.addEventListener('input', () => {
@@ -989,19 +1417,27 @@ class OrbitApp {
       vDisp.textContent = item.sliderVal.toFixed(3);
       this.dirty = true;
     });
+    range.addEventListener('change', () => {
+      this._pushHistory();
+      this._updateHistoryBtns();
+    });
 
     div.querySelector('.slider-min-in').addEventListener('change', e => {
       item.sliderMin = parseFloat(e.target.value);
       range.min = item.sliderMin;
       range.step = (item.sliderMax - item.sliderMin) / 200;
+      this._pushHistory();
+      this._updateHistoryBtns();
     });
     div.querySelector('.slider-max-in').addEventListener('change', e => {
       item.sliderMax = parseFloat(e.target.value);
       range.max = item.sliderMax;
       range.step = (item.sliderMax - item.sliderMin) / 200;
+      this._pushHistory();
+      this._updateHistoryBtns();
     });
 
-    // --- settings panel ---
+    // Settings panel
     const settingsPanel = div.querySelector('.expr-settings');
     const colorBar = div.querySelector('.expr-color-bar');
     const settingsBtn = div.querySelector('.expr-btn.settings');
@@ -1015,24 +1451,59 @@ class OrbitApp {
     colorBar.addEventListener('click', toggleSettings);
     settingsBtn.addEventListener('click', toggleSettings);
 
-    // --- delete ---
+    // Delete
     div.querySelector('.expr-btn.delete').addEventListener('click', () => {
       this._removeItem(item.id);
     });
 
-    // --- color swatches ---
+    // Color swatches
+    const updateColor = (newColor) => {
+      item.color = newColor;
+      colorBar.style.background = item.color;
+      div.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
+      div.querySelectorAll('.color-swatch').forEach(s => {
+        if (s.dataset.c === newColor) s.classList.add('selected');
+      });
+      range.style.setProperty('--fill', item.color);
+      const customInput = div.querySelector('.color-custom');
+      if (customInput) customInput.value = item.color;
+      this.dirty = true;
+      this._pushHistory();
+      this._updateHistoryBtns();
+    };
+
     div.querySelectorAll('.color-swatch').forEach(sw => {
-      sw.addEventListener('click', () => {
-        item.color = sw.dataset.c;
+      sw.addEventListener('click', () => updateColor(sw.dataset.c));
+    });
+
+    const customColorInput = div.querySelector('.color-custom');
+    if (customColorInput) {
+      customColorInput.addEventListener('input', () => {
+        item.color = customColorInput.value;
         colorBar.style.background = item.color;
         div.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
-        sw.classList.add('selected');
         range.style.setProperty('--fill', item.color);
         this.dirty = true;
       });
+      customColorInput.addEventListener('change', () => {
+        this._pushHistory();
+        this._updateHistoryBtns();
+      });
+    }
+
+    // Line style buttons
+    div.querySelectorAll('.line-style-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        item.lineStyle = btn.dataset.style;
+        div.querySelectorAll('.line-style-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        this.dirty = true;
+        this._pushHistory();
+        this._updateHistoryBtns();
+      });
     });
 
-    // --- thickness ---
+    // Thickness
     const thRange = div.querySelector('.thickness-range');
     const thLabel = div.querySelector('.thickness-label');
     thRange.addEventListener('input', () => {
@@ -1040,11 +1511,47 @@ class OrbitApp {
       thLabel.textContent = item.thickness + 'px';
       this.dirty = true;
     });
+    thRange.addEventListener('change', () => {
+      this._pushHistory();
+      this._updateHistoryBtns();
+    });
 
-    // --- visibility ---
+    // Visibility
     div.querySelector('.visibility-check').addEventListener('change', e => {
       item.visible = e.target.checked;
       this.dirty = true;
+      this._pushHistory();
+      this._updateHistoryBtns();
+    });
+
+    // Drag-to-reorder events
+    div.addEventListener('dragstart', e => {
+      this._dragSrcId = item.id;
+      div.classList.add('drag-over');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    div.addEventListener('dragend', () => {
+      this._dragSrcId = null;
+      document.querySelectorAll('.expr-item').forEach(el => el.classList.remove('drag-over'));
+    });
+    div.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      document.querySelectorAll('.expr-item').forEach(el => el.classList.remove('drag-over'));
+      div.classList.add('drag-over');
+    });
+    div.addEventListener('drop', e => {
+      e.preventDefault();
+      if (this._dragSrcId === null || this._dragSrcId === item.id) return;
+      const srcIdx = this.items.findIndex(i => i.id === this._dragSrcId);
+      const dstIdx = this.items.findIndex(i => i.id === item.id);
+      if (srcIdx === -1 || dstIdx === -1) return;
+      const [moved] = this.items.splice(srcIdx, 1);
+      this.items.splice(dstIdx, 0, moved);
+      this._rebuildSidebar();
+      this.dirty = true;
+      this._pushHistory();
+      this._updateHistoryBtns();
     });
 
     return div;
@@ -1054,6 +1561,7 @@ class OrbitApp {
     const div = document.createElement('div');
     div.className = 'expr-item';
     div.dataset.id = item.id;
+    div.setAttribute('draggable', 'true');
 
     const renderRows = () => {
       const rowsContainer = div.querySelector('.table-rows');
@@ -1072,12 +1580,18 @@ class OrbitApp {
             item.tableRows[e.target.dataset.idx][e.target.dataset.col] = e.target.value;
             this.dirty = true;
           });
+          inp.addEventListener('change', () => {
+            this._pushHistory();
+            this._updateHistoryBtns();
+          });
         });
         rowEl.querySelector('.table-row-del').addEventListener('click', e => {
           item.tableRows.splice(parseInt(e.target.dataset.idx), 1);
           if (item.tableRows.length === 0) item.tableRows.push({ x: '', y: '' });
           renderRows();
           this.dirty = true;
+          this._pushHistory();
+          this._updateHistoryBtns();
         });
         rowsContainer.appendChild(rowEl);
       });
@@ -1085,6 +1599,7 @@ class OrbitApp {
 
     div.innerHTML = `
       <div class="expr-main-row">
+        <div class="drag-handle" title="Drag to reorder">⋮⋮</div>
         <div class="expr-color-bar" style="background:${item.color}"></div>
         <div class="expr-input-area">
           <div class="table-expr">
@@ -1104,9 +1619,7 @@ class OrbitApp {
       <div class="expr-settings">
         <div class="settings-row">
           <span class="settings-label">Color</span>
-          <div class="color-swatches">
-            ${COLORS.map(c => `<div class="color-swatch ${c === item.color ? 'selected' : ''}" style="background:${c}" data-c="${c}"></div>`).join('')}
-          </div>
+          ${this._buildColorSwatchesHtml(item)}
         </div>
       </div>
     `;
@@ -1116,6 +1629,8 @@ class OrbitApp {
     div.querySelector('.table-add-row').addEventListener('click', () => {
       item.tableRows.push({ x: '', y: '' });
       renderRows();
+      this._pushHistory();
+      this._updateHistoryBtns();
     });
     div.querySelector('.expr-btn.delete').addEventListener('click', () => {
       this._removeItem(item.id);
@@ -1134,13 +1649,60 @@ class OrbitApp {
         div.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
         sw.classList.add('selected');
         this.dirty = true;
+        this._pushHistory();
+        this._updateHistoryBtns();
       });
+    });
+
+    const customColorInput = div.querySelector('.color-custom');
+    if (customColorInput) {
+      customColorInput.addEventListener('input', () => {
+        item.color = customColorInput.value;
+        colorBar.style.background = item.color;
+        div.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
+        this.dirty = true;
+      });
+      customColorInput.addEventListener('change', () => {
+        this._pushHistory();
+        this._updateHistoryBtns();
+      });
+    }
+
+    // Drag-to-reorder for table items
+    div.addEventListener('dragstart', e => {
+      this._dragSrcId = item.id;
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    div.addEventListener('dragend', () => {
+      this._dragSrcId = null;
+      document.querySelectorAll('.expr-item').forEach(el => el.classList.remove('drag-over'));
+    });
+    div.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      document.querySelectorAll('.expr-item').forEach(el => el.classList.remove('drag-over'));
+      div.classList.add('drag-over');
+    });
+    div.addEventListener('drop', e => {
+      e.preventDefault();
+      if (this._dragSrcId === null || this._dragSrcId === item.id) return;
+      const srcIdx = this.items.findIndex(i => i.id === this._dragSrcId);
+      const dstIdx = this.items.findIndex(i => i.id === item.id);
+      if (srcIdx === -1 || dstIdx === -1) return;
+      const [moved] = this.items.splice(srcIdx, 1);
+      this.items.splice(dstIdx, 0, moved);
+      this._rebuildSidebar();
+      this.dirty = true;
+      this._pushHistory();
+      this._updateHistoryBtns();
     });
 
     return div;
   }
 
-  // ---- Canvas rendering ----------------------------------------
+  // ================================================================
+  //  Canvas rendering
+  // ================================================================
 
   _render() {
     const { renderer } = this;
@@ -1160,32 +1722,31 @@ class OrbitApp {
       }
 
       const p = item.parsed;
-      if (!p || p.kind === 'error' || p.kind === null) continue;
+      if (!p || p.kind === 'error' || p.kind === 'note' || p.kind === null) continue;
 
       switch (p.kind) {
         case 'function':
-          renderer.plotFunction(p.expr, item.color, item.thickness, ev);
+          renderer.plotFunction(p.expr, item.color, item.thickness, ev, item.lineStyle, p.domain || null);
           break;
         case 'inequality':
           renderer.plotInequality(p.expr, p.op, item.color, ev);
           break;
         case 'vertical':
-          renderer.plotVertical(p.value, item.color, item.thickness);
+          renderer.plotVertical(p.value, item.color, item.thickness, item.lineStyle);
           break;
         case 'point':
           renderer.plotPoint(p.x, p.y, item.color, `(${p.x}, ${p.y})`);
           break;
         case 'polar':
-          renderer.plotPolar(p.expr, item.color, item.thickness, ev);
+          renderer.plotPolar(p.expr, item.color, item.thickness, ev, item.lineStyle);
           break;
         case 'parametric':
-          renderer.plotParametric(p.xExpr, p.yExpr, item.color, item.thickness, ev);
+          renderer.plotParametric(p.xExpr, p.yExpr, item.color, item.thickness, ev, item.lineStyle);
           break;
         case 'implicit':
-          renderer.plotImplicit(p.left, p.right, item.color, item.thickness, ev);
+          renderer.plotImplicit(p.left, p.right, item.color, item.thickness, ev, item.lineStyle);
           break;
         case 'slider':
-          // Sliders don't render on canvas
           break;
       }
     }
@@ -1210,6 +1771,9 @@ class OrbitApp {
         }
       }
     }
+
+    // Trace marker
+    renderer.drawTraceMarker();
   }
 
   _renderLoop() {
@@ -1220,22 +1784,24 @@ class OrbitApp {
     requestAnimationFrame(() => this._renderLoop());
   }
 
-  // ---- Events -------------------------------------------------
+  // ================================================================
+  //  Events
+  // ================================================================
 
   _bindEvents() {
     const canvas = this.canvas;
     const vp = this.renderer.vp;
 
-    // Pan
+    // Pan + click-to-trace
     canvas.addEventListener('mousedown', e => {
       if (e.button !== 0) return;
       this.dragging = true;
+      this._dragMoved = false;
       this.lastMouse = { x: e.clientX, y: e.clientY };
       canvas.classList.add('dragging');
     });
 
     canvas.addEventListener('mousemove', e => {
-      // Coord display
       const rect = canvas.getBoundingClientRect();
       const [wx, wy] = vp.toWorld(e.clientX - rect.left, e.clientY - rect.top);
       document.getElementById('coord-display').textContent = `(${wx.toFixed(4)}, ${wy.toFixed(4)})`;
@@ -1243,22 +1809,40 @@ class OrbitApp {
       if (!this.dragging) return;
       const dx = e.clientX - this.lastMouse.x;
       const dy = e.clientY - this.lastMouse.y;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) this._dragMoved = true;
       vp.pan(dx, dy);
       this.lastMouse = { x: e.clientX, y: e.clientY };
       this.dirty = true;
     });
 
-    const stopDrag = () => {
+    canvas.addEventListener('mouseup', e => {
+      if (!this._dragMoved && e.button === 0) {
+        // Click-to-trace
+        const rect = canvas.getBoundingClientRect();
+        const [wx, wy] = vp.toWorld(e.clientX - rect.left, e.clientY - rect.top);
+        if (this.renderer.tracePoint &&
+            Math.abs(this.renderer.tracePoint.wx - wx) < (vp.xMax - vp.xMin) * 0.02 &&
+            Math.abs(this.renderer.tracePoint.wy - wy) < (vp.yMax - vp.yMin) * 0.02) {
+          // Close enough to existing marker — remove it
+          this.renderer.tracePoint = null;
+        } else {
+          this.renderer.tracePoint = { wx, wy };
+        }
+        this.dirty = true;
+      }
       this.dragging = false;
+      this._dragMoved = false;
       canvas.classList.remove('dragging');
-    };
-    canvas.addEventListener('mouseup', stopDrag);
+    });
+
     canvas.addEventListener('mouseleave', () => {
-      stopDrag();
+      this.dragging = false;
+      this._dragMoved = false;
+      canvas.classList.remove('dragging');
       document.getElementById('coord-display').textContent = '';
     });
 
-    // Zoom (mouse wheel)
+    // Zoom
     canvas.addEventListener('wheel', e => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
@@ -1272,6 +1856,7 @@ class OrbitApp {
     canvas.addEventListener('touchstart', e => {
       if (e.touches.length === 1) {
         this.dragging = true;
+        this._dragMoved = false;
         this.lastMouse = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       } else if (e.touches.length === 2) {
         this.dragging = false;
@@ -1287,6 +1872,7 @@ class OrbitApp {
         const dx = e.touches[0].clientX - this.lastMouse.x;
         const dy = e.touches[0].clientY - this.lastMouse.y;
         vp.pan(dx, dy);
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) this._dragMoved = true;
         this.lastMouse = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         this.dirty = true;
       } else if (e.touches.length === 2) {
@@ -1305,9 +1891,13 @@ class OrbitApp {
       }
     }, { passive: false });
 
-    canvas.addEventListener('touchend', () => { this.dragging = false; lastTouchDist = 0; }, { passive: true });
+    canvas.addEventListener('touchend', () => {
+      this.dragging = false;
+      this._dragMoved = false;
+      lastTouchDist = 0;
+    }, { passive: true });
 
-    // Toolbar
+    // Toolbar buttons
     document.getElementById('btn-add-expr').addEventListener('click', () => this._addItem());
     document.getElementById('btn-add-table').addEventListener('click', () => this._addItem(true));
     document.getElementById('btn-add-bottom').addEventListener('click', () => this._addItem());
@@ -1320,6 +1910,11 @@ class OrbitApp {
     });
     document.getElementById('btn-reset').addEventListener('click', () => {
       vp.reset(); this.dirty = true;
+    });
+
+    // Share button
+    document.getElementById('btn-share').addEventListener('click', () => {
+      this._shareUrl();
     });
 
     // Calculus panel toggle
@@ -1355,8 +1950,32 @@ class OrbitApp {
       this.dirty = true;
     });
 
+    // Undo/Redo buttons
+    document.getElementById('btn-undo').addEventListener('click', () => this._undo());
+    document.getElementById('btn-redo').addEventListener('click', () => this._redo());
+
+    // Clear all
+    document.getElementById('btn-clear-all').addEventListener('click', () => this._clearAll());
+
     // Keyboard shortcuts
     document.addEventListener('keydown', e => {
+      const tag = document.activeElement ? document.activeElement.tagName : '';
+      const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+      if (e.key === 'Escape') {
+        orbitAI.close();
+        this.renderer.tracePoint = null;
+        this.dirty = true;
+        closeHelpModal();
+        return;
+      }
+
+      if (e.key === '?' && !inInput) {
+        e.preventDefault();
+        toggleHelpModal();
+        return;
+      }
+
       if (e.ctrlKey || e.metaKey) {
         if (e.key === '=' || e.key === '+') {
           e.preventDefault(); vp.zoom(0.8, vp.w / 2, vp.h / 2); this.dirty = true;
@@ -1364,14 +1983,19 @@ class OrbitApp {
           e.preventDefault(); vp.zoom(1.25, vp.w / 2, vp.h / 2); this.dirty = true;
         } else if (e.key === '0') {
           e.preventDefault(); vp.reset(); this.dirty = true;
-        } else if (e.shiftKey && e.key === 'A') {
+        } else if (e.key === 's' || e.key === 'S') {
+          e.preventDefault(); this._shareUrl();
+        } else if (e.shiftKey && (e.key === 'Z' || e.key === 'z')) {
+          e.preventDefault(); this._redo();
+        } else if (!e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+          e.preventDefault(); this._undo();
+        } else if (e.shiftKey && (e.key === 'A' || e.key === 'a')) {
           e.preventDefault(); orbitAI.toggle();
         }
       }
-      if (e.key === 'Escape') orbitAI.close();
     });
 
-    // Secret AI button (subtle ✦ in header)
+    // Secret AI button
     document.getElementById('ai-secret-btn').addEventListener('click', () => orbitAI.toggle());
 
     // Logo triple-click to open AI
@@ -1385,7 +2009,51 @@ class OrbitApp {
         orbitAI.toggle();
       }
     });
+
+    // Help modal overlay click
+    document.getElementById('help-modal-overlay').addEventListener('click', e => {
+      if (e.target === document.getElementById('help-modal-overlay')) closeHelpModal();
+    });
+    document.getElementById('help-modal-close').addEventListener('click', closeHelpModal);
   }
+}
+
+// ================================================================
+//  Toast notification
+// ================================================================
+function showToast(msg) {
+  let toast = document.getElementById('orbit-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'orbit-toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.remove('toast-hide');
+  toast.classList.add('toast-show');
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => {
+    toast.classList.remove('toast-show');
+    toast.classList.add('toast-hide');
+  }, 2500);
+}
+
+// ================================================================
+//  Help modal
+// ================================================================
+function toggleHelpModal() {
+  const overlay = document.getElementById('help-modal-overlay');
+  if (overlay.classList.contains('hidden')) {
+    overlay.classList.remove('hidden');
+    overlay.style.animation = 'none';
+    requestAnimationFrame(() => { overlay.style.animation = ''; });
+  } else {
+    closeHelpModal();
+  }
+}
+
+function closeHelpModal() {
+  document.getElementById('help-modal-overlay').classList.add('hidden');
 }
 
 // ================================================================
@@ -1412,13 +2080,11 @@ function fmt(n) {
 
 // ================================================================
 //  OrbitAI  —  secret AI chat panel
-//  Calls the server-side /api/chat endpoint (Vercel serverless)
-//  which proxies to the Anthropic Claude API.
 // ================================================================
 class OrbitAI {
   constructor() {
     this.isOpen = false;
-    this.messages = []; // { role: 'user'|'assistant', content: string }
+    this.messages = [];
     this.loading = false;
 
     this.panel       = document.getElementById('ai-panel');
@@ -1445,7 +2111,6 @@ class OrbitAI {
       }
     });
 
-    // Auto-resize textarea
     this.inputEl.addEventListener('input', () => {
       this.inputEl.style.height = 'auto';
       this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 120) + 'px';
@@ -1460,7 +2125,6 @@ class OrbitAI {
     this.isOpen = true;
     this.panel.classList.remove('hidden');
     this.backdrop.classList.remove('hidden');
-    // Re-trigger animation
     this.panel.style.animation = 'none';
     requestAnimationFrame(() => {
       this.panel.style.animation = '';
@@ -1476,7 +2140,6 @@ class OrbitAI {
 
   clearChat() {
     this.messages = [];
-    // Reset to just the welcome message
     this.msgsEl.innerHTML = `
       <div class="ai-msg assistant">
         <div class="ai-msg-bubble">

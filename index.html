@@ -66,6 +66,8 @@
         <button class="pill icon-pill" id="btn-reset"    title="Reset View (Ctrl+0)">⌂</button>
         <div class="toolbar-sep"></div>
         <button class="pill icon-pill" id="btn-calc-toggle" title="Calculus Tools">∫</button>
+        <button class="pill icon-pill" id="btn-share"    title="Share (Ctrl+S)">⤴</button>
+        <button class="pill icon-pill" id="btn-help"     title="Keyboard Shortcuts (?)">?</button>
       </nav>
 
       <!-- Secret AI trigger — very subtle dot -->
@@ -77,9 +79,18 @@
 
       <!-- Sidebar -->
       <aside id="sidebar">
+        <!-- Sidebar header with undo/redo -->
+        <div id="sidebar-header">
+          <span id="sidebar-title">Expressions</span>
+          <div id="sidebar-header-actions">
+            <button class="history-btn" id="btn-undo" title="Undo (Ctrl+Z)" disabled>←</button>
+            <button class="history-btn" id="btn-redo" title="Redo (Ctrl+Shift+Z)" disabled>→</button>
+          </div>
+        </div>
         <div id="expression-list"></div>
         <div id="sidebar-footer">
           <button id="btn-add-bottom">+ Add Expression</button>
+          <button id="btn-clear-all">Clear all</button>
         </div>
       </aside>
 
@@ -158,9 +169,53 @@
     <!-- AI Backdrop -->
     <div id="ai-backdrop" class="hidden"></div>
 
+    <!-- Help Modal -->
+    <div id="help-modal-overlay" class="hidden">
+      <div id="help-modal">
+        <div id="help-modal-header">
+          <span id="help-modal-title">Keyboard Shortcuts</span>
+          <button id="help-modal-close" title="Close">✕</button>
+        </div>
+        <div id="help-modal-body">
+          <ul class="shortcut-list">
+            <li><kbd>Ctrl+Z</kbd> <span>Undo</span></li>
+            <li><kbd>Ctrl+Shift+Z</kbd> <span>Redo</span></li>
+            <li><kbd>Ctrl+S</kbd> <span>Share (copy link)</span></li>
+            <li><kbd>Ctrl+0</kbd> <span>Reset view</span></li>
+            <li><kbd>Ctrl++</kbd> <span>Zoom in</span></li>
+            <li><kbd>Ctrl+−</kbd> <span>Zoom out</span></li>
+            <li><kbd>Scroll</kbd> <span>Zoom at cursor</span></li>
+            <li><kbd>Drag</kbd> <span>Pan</span></li>
+            <li><kbd>Click canvas</kbd> <span>Place trace marker</span></li>
+            <li><kbd>Escape</kbd> <span>Close panels / clear marker</span></li>
+            <li><kbd>?</kbd> <span>Toggle this help</span></li>
+            <li><kbd>Ctrl+Shift+A</kbd> <span>Open Orbit AI</span></li>
+          </ul>
+          <div class="shortcut-section-title">Expression syntax</div>
+          <ul class="shortcut-list syntax-list">
+            <li><kbd>y = sin(x)</kbd> <span>Function</span></li>
+            <li><kbd>r = cos(theta)</kbd> <span>Polar</span></li>
+            <li><kbd>(cos(t), sin(t))</kbd> <span>Parametric</span></li>
+            <li><kbd>x² + y² = 9</kbd> <span>Implicit</span></li>
+            <li><kbd>a = 2</kbd> <span>Slider variable</span></li>
+            <li><kbd>y &gt; x</kbd> <span>Inequality</span></li>
+            <li><kbd>y = {x&gt;0: x, -x}</kbd> <span>Piecewise</span></li>
+            <li><kbd>y = x² {x &gt; 0}</kbd> <span>Domain restriction</span></li>
+            <li><kbd>// note text</kbd> <span>Text note</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/mathjs@12.4.0/lib/browser/math.js"></script>
   <script src="js/orbit.js"></script>
+  <script>
+    // Wire up help button after DOM is ready
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('btn-help').addEventListener('click', toggleHelpModal);
+    });
+  </script>
 </body>
 </html>
