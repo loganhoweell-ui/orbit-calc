@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orbit</title>
+  <link rel="icon" href="orbit.ico" type="image/x-icon">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- Header -->
+    <header id="header">
+      <div id="logo" title="Click 3× to open Orbit AI">
+        <div id="logo-orbit-ring"></div>
+        <img src="orbit.ico" alt="" id="logo-icon">
+        <span id="logo-text">Orbit</span>
+        <span id="logo-sub">calc</span>
+      </div>
+
+      <nav id="toolbar">
+        <button class="pill" id="btn-add-expr">+ Expression</button>
+        <button class="pill" id="btn-add-table">+ Table</button>
+        <div class="toolbar-sep"></div>
+        <button class="pill icon-pill" id="btn-zoom-in"  title="Zoom In (Ctrl++)">+</button>
+        <button class="pill icon-pill" id="btn-zoom-out" title="Zoom Out (Ctrl+-)">−</button>
+        <button class="pill icon-pill" id="btn-reset"    title="Reset View (Ctrl+0)">⌂</button>
+        <div class="toolbar-sep"></div>
+        <button class="pill icon-pill" id="btn-calc-toggle" title="Calculus Tools">∫</button>
+      </nav>
+
+      <!-- Secret AI trigger — very subtle dot -->
+      <button id="ai-secret-btn" title="" aria-label="Open AI">✦</button>
+    </header>
+
+    <!-- Main -->
+    <div id="main">
+
+      <!-- Sidebar -->
+      <aside id="sidebar">
+        <div id="expression-list"></div>
+        <div id="sidebar-footer">
+          <button id="btn-add-bottom">+ Add Expression</button>
+        </div>
+      </aside>
+
+      <!-- Canvas -->
+      <div id="canvas-wrap">
+        <canvas id="graph"></canvas>
+        <div id="coord-display"></div>
+
+        <!-- Calculus panel -->
+        <div id="calc-panel" class="hidden">
+          <div class="calc-panel-header">Calculus Tools</div>
+          <div class="calc-row">
+            <label>Tangent at x =</label>
+            <input type="number" id="tangent-x" value="0" step="0.1">
+            <button id="btn-tangent">Show</button>
+          </div>
+          <div class="calc-row">
+            <label>Integral</label>
+            <input type="number" id="int-a" value="0" step="0.1" placeholder="a">
+            <span>to</span>
+            <input type="number" id="int-b" value="1" step="0.1" placeholder="b">
+            <button id="btn-integral">Show</button>
+          </div>
+          <div id="calc-result"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Chat Panel (secret) -->
+    <div id="ai-panel" class="hidden">
+      <div id="ai-panel-header">
+        <div id="ai-panel-title">
+          <span id="ai-title-icon">✦</span>
+          <span>Orbit AI</span>
+        </div>
+        <div id="ai-header-actions">
+          <button id="ai-clear-btn" title="Clear chat">↺</button>
+          <button id="ai-close-btn" title="Close">✕</button>
+        </div>
+      </div>
+
+      <div id="ai-messages">
+        <div class="ai-msg assistant">
+          <div class="ai-msg-bubble">
+            Hey! I'm Orbit AI. Ask me anything — math, graphs, equations, or anything else.
+          </div>
+        </div>
+      </div>
+
+      <div id="ai-input-row">
+        <textarea id="ai-input" placeholder="Ask anything…" rows="1" spellcheck="false"></textarea>
+        <button id="ai-send-btn" title="Send (Enter)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M14 8L2 2l2 6-2 6 12-6z" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- AI Backdrop -->
+    <div id="ai-backdrop" class="hidden"></div>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/mathjs@12.4.0/lib/browser/math.js"></script>
+  <script src="js/orbit.js"></script>
+</body>
+</html>

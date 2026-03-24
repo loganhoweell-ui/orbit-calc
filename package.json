@@ -1,0 +1,9 @@
+{
+  "name": "orbit-calc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Orbit — a Desmos-inspired graphing calculator with AI chat",
+  "engines": {
+    "node": "20.x"
+  }
+}
