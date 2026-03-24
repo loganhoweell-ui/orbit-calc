@@ -25,10 +25,20 @@ export default async function handler(req, res) {
     });
   }
 
-  const { messages } = req.body;
+  const { messages, model } = req.body;
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages array is required' });
   }
+
+  // Whitelist allowed models so the client can't call arbitrary endpoints
+  const ALLOWED_MODELS = [
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'mixtral-8x7b-32768',
+    'gemma2-9b-it',
+    'llama3-8b-8192'
+  ];
+  const selectedModel = ALLOWED_MODELS.includes(model) ? model : 'llama-3.3-70b-versatile';
 
   try {
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -38,7 +48,7 @@ export default async function handler(req, res) {
         'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: selectedModel,
         max_tokens: 1024,
         temperature: 0.7,
         messages: [

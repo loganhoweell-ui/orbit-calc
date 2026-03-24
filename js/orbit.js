@@ -1421,11 +1421,12 @@ class OrbitAI {
     this.messages = []; // { role: 'user'|'assistant', content: string }
     this.loading = false;
 
-    this.panel    = document.getElementById('ai-panel');
-    this.backdrop = document.getElementById('ai-backdrop');
-    this.msgsEl   = document.getElementById('ai-messages');
-    this.inputEl  = document.getElementById('ai-input');
-    this.sendBtn  = document.getElementById('ai-send-btn');
+    this.panel       = document.getElementById('ai-panel');
+    this.backdrop    = document.getElementById('ai-backdrop');
+    this.msgsEl      = document.getElementById('ai-messages');
+    this.inputEl     = document.getElementById('ai-input');
+    this.sendBtn     = document.getElementById('ai-send-btn');
+    this.modelSelect = document.getElementById('ai-model-select');
 
     this._bindEvents();
   }
@@ -1527,10 +1528,12 @@ class OrbitAI {
     this._showTyping();
 
     try {
+      const model = this.modelSelect?.value || 'llama-3.3-70b-versatile';
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: this.messages })
+        body: JSON.stringify({ messages: this.messages, model })
       });
 
       this._hideTyping();
@@ -1546,10 +1549,14 @@ class OrbitAI {
 
     } catch (err) {
       this._hideTyping();
+      const msg = err.message || '';
+      const isKeyError = msg.toLowerCase().includes('groq_api_key') || msg.toLowerCase().includes('not set');
       const errDiv = document.createElement('div');
       errDiv.className = 'ai-msg assistant';
-      errDiv.innerHTML = `<div class="ai-msg-bubble" style="color:#ff5757;border-color:#3a1a1a">
-        ${this._escapeHtml(err.message || 'Something went wrong. Check your API key in Vercel env vars.')}
+      errDiv.innerHTML = `<div class="ai-msg-bubble" style="color:#ff5757;border-color:#3a1a1a;background:#110808">
+        ${isKeyError
+          ? '⚠ GROQ_API_KEY not set.<br><br>Go to <b>Vercel → your project → Settings → Environment Variables</b> and add:<br><code style="background:#1a0a0a;padding:2px 6px;border-radius:4px;font-size:11px">GROQ_API_KEY = gsk_...</code><br><br>Get a free key at <b>console.groq.com</b>'
+          : this._escapeHtml(msg || 'Something went wrong.')}
       </div>`;
       this.msgsEl.appendChild(errDiv);
       this._scrollBottom();
