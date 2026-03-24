@@ -1,63 +1,83 @@
 // ================================================================
 //  Orbit Calc — AI Chat Serverless Function
-//  Deployed via Vercel (api/chat.js)
+//  Provider: Groq  (https://console.groq.com — 100% free tier)
+//  Model:    llama-3.3-70b-versatile
 //
-//  Set the following env var in your Vercel project settings:
-//    ANTHROPIC_API_KEY = sk-ant-...
+//  Add this env var in Vercel project settings:
+//    GROQ_API_KEY = gsk_...
 //
-//  The frontend calls POST /api/chat with:
+//  For local dev, add to .env.local:
+//    GROQ_API_KEY = gsk_...
+//
+//  Frontend POSTs to /api/chat:
 //    { messages: [{ role: 'user'|'assistant', content: string }] }
 // ================================================================
 
 export default async function handler(req, res) {
-  // Only allow POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
     return res.status(500).json({
-      error: 'ANTHROPIC_API_KEY is not set. Add it to your Vercel environment variables.'
+      error: 'GROQ_API_KEY is not set. Add it to Vercel → Settings → Environment Variables.'
     });
   }
 
   const { messages } = req.body;
-  if (!messages || !Array.isArray(messages)) {
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages array is required' });
   }
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: 'llama-3.3-70b-versatile',
         max_tokens: 1024,
-        system: `You are Orbit AI, a helpful assistant embedded in Orbit Calc — a graphing calculator.
-You're knowledgeable about math, calculus, graphing, equations, and general topics.
-Keep responses concise and friendly. When showing math expressions, use plain text notation like x^2 or sin(x).
-The calculator supports: y=f(x), inequalities, implicit equations like x^2+y^2=9, polar r=f(theta), parametric (f(t),g(t)), sliders like a=3, and tables.`,
-        messages
+        temperature: 0.7,
+        messages: [
+          {
+            role: 'system',
+            content: `You are Orbit AI, a helpful assistant built into Orbit Calc — a graphing calculator.
+You have strong math and calculus knowledge. Be concise and friendly.
+When showing expressions use plain text: x^2, sin(x), sqrt(x), etc.
+The calculator supports:
+- Functions: y = sin(x), y = x^2 + 3
+- Inequalities: y > x + 2
+- Implicit curves: x^2 + y^2 = 9
+- Polar: r = cos(theta)
+- Parametric: (cos(t), sin(t))
+- Sliders: a = 3  {-10 <= a <= 10}
+- Tables: click + Table button
+- Calculus: click the ∫ button for tangents and integrals`
+          },
+          ...messages
+        ]
       })
     });
 
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}));
-      return res.status(response.status).json({
-        error: errBody.error?.message || `Anthropic API error ${response.status}`
-      });
+      const errMsg = errBody.error?.message || `Groq API error ${response.status}`;
+      return res.status(response.status).json({ error: errMsg });
     }
 
     const data = await response.json();
-    return res.status(200).json(data);
+    const reply = data.choices?.[0]?.message?.content ?? 'No response.';
+
+    // Return in a consistent format the frontend expects
+    return res.status(200).json({
+      content: [{ type: 'text', text: reply }]
+    });
 
   } catch (err) {
-    console.error('AI chat error:', err);
+    console.error('Orbit AI error:', err);
     return res.status(500).json({ error: err.message || 'Internal server error' });
   }
 }
